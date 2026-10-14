@@ -1,0 +1,10 @@
+seata:
+  tx-service-group: hmall
+  registry:
+    type: file
+  service:
+    vgroupMapping:
+      hmall: default
+    grouplist:
+      default: 127.0.0.1:8099
+  data-source-proxy-mode: XA
