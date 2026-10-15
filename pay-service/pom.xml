@@ -17,6 +17,11 @@
     </properties>
 
     <dependencies>
+        <!--消息发送-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
         <!--common-->
         <dependency>
             <groupId>com.heima</groupId>
