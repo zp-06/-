@@ -21,6 +21,12 @@ public interface IItemService extends IService<Item> {
 
     void deductStock(List<OrderDetailDTO> items);
 
+    /**
+     * 回复库存（取消订单、退回商品时调用）
+     * @param items 商品id与数量的集合
+     */
+    void refundStock(List<OrderDetailDTO> items);
+
     List<ItemDTO> queryItemByIds(Collection<Long> ids);
 
     ItemDTO queryItemById(Long id);

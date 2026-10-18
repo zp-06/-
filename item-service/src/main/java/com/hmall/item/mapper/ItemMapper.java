@@ -22,4 +22,11 @@ public interface ItemMapper extends BaseMapper<Item> {
      */
     @Update("UPDATE item SET stock = stock - #{num} WHERE id = #{itemId} AND stock >= #{num}")
     int updateStock(OrderDetailDTO orderDetail);
+
+    /**
+     * 回复库存（取消订单、退回商品时调用）：
+     * 在现有库存基础上加回购买数量
+     */
+    @Update("UPDATE item SET stock = stock + #{num} WHERE id = #{itemId}")
+    int refundStock(OrderDetailDTO orderDetail);
 }

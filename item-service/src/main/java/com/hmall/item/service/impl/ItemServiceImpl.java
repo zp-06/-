@@ -194,6 +194,19 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
     }
 
     @Override
+    public void refundStock(List<OrderDetailDTO> items) {
+        // 逐条把库存加回（取消订单/退货场景），返回影响行数为 0 说明商品不存在
+        for (OrderDetailDTO item : items) {
+            int rows = baseMapper.refundStock(item);
+            if (rows == 0) {
+                throw new BizIllegalException("商品不存在！");
+            }
+        }
+        // 库存恢复成功后删除缓存，保证下次读取到最新库存
+        items.forEach(detail -> deleteCache(detail.getItemId()));
+    }
+
+    @Override
     public boolean updateById(Item entity) {
         boolean updated = super.updateById(entity);
         if (updated) {

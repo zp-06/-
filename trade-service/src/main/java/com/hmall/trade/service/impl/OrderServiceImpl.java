@@ -5,6 +5,7 @@ import com.hmall.api.client.CartClient;
 import com.hmall.api.client.ItemClient;
 import com.hmall.api.dto.ItemDTO;
 import com.hmall.api.dto.OrderDetailDTO;
+import com.hmall.common.constants.MQConstants;
 import com.hmall.common.exception.BadRequestException;
 import com.hmall.common.utils.UserContext;
 import com.hmall.trade.domain.dto.OrderFormDTO;
@@ -90,16 +91,60 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
         // 4.清理购物车商品
 //        cartClient.deleteCartItemByIds(itemIds);
         rabbitTemplate.convertAndSend("trade.topic","order.create",itemIds);
+        rabbitTemplate.convertAndSend(
+                MQConstants.DELAY_EXCHANGE_NAME,
+                MQConstants.DELAY_ORDER_KEY,
+                order.getId(),
+                message -> {
+                    message.getMessageProperties().setDelay(10000);
+                    return message;
+                });
+
         return order.getId();
     }
 
     @Override
     public void markOrderPaySuccess(Long orderId) {
+        // 1.查询订单
+        Order old = getById(orderId);
+// 2.判断订单状态
+        if (old == null || old.getStatus() != 1) {
+            // 订单不存在或者订单状态不是1，放弃处理
+            return;
+        }
+// 3.尝试更新订单
         Order order = new Order();
         order.setId(orderId);
         order.setStatus(2);
         order.setPayTime(LocalDateTime.now());
         updateById(order);
+
+    }
+    //TODO 4.2.未支付，取消订单，回复库存
+    @Override
+    @GlobalTransactional
+    public void cancelOrder(Long orderId) {
+        // 1.查询订单
+        Order old = getById(orderId);
+        // 2.判断订单状态：只有未付款（状态1）才能取消，其它状态直接放弃
+        if (old == null || old.getStatus() != 1) {
+            return;
+        }
+        // 3.更新订单状态为交易取消、订单关闭（状态5），并记录关闭时间
+        Order order = new Order();
+        order.setId(orderId);
+        order.setStatus(5);
+        order.setCloseTime(LocalDateTime.now());
+        updateById(order);
+        // 4.查询该订单的明细，构造商品id与数量的集合
+        List<OrderDetail> details = detailService.lambdaQuery()
+                .eq(OrderDetail::getOrderId, orderId)
+                .list();
+        List<OrderDetailDTO> refundItems = details.stream()
+                .map(d -> new OrderDetailDTO().setItemId(d.getItemId()).setNum(d.getNum()))
+                .collect(Collectors.toList());
+        // 5.调用商品服务回复库存
+        itemClient.refundStock(refundItems);
     }
 
     private List<OrderDetail> buildDetails(Long orderId, List<ItemDTO> items, Map<Long, Integer> numMap) {

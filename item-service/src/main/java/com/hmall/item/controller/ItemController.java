@@ -82,4 +82,10 @@ public class ItemController {
     public void deductStock(@RequestBody List<OrderDetailDTO> items){
         itemService.deductStock(items);
     }
+
+    @ApiOperation("批量回复库存")
+    @PutMapping("/stock/refund")
+    public void refundStock(@RequestBody List<OrderDetailDTO> items){
+        itemService.refundStock(items);
+    }
 }
