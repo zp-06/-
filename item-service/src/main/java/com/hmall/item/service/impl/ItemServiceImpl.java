@@ -14,6 +14,7 @@ import com.hmall.item.service.IItemService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import java.io.Serializable;
@@ -23,9 +24,14 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_KEY_PREFIX;
+import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_LOCK_KEY_PREFIX;
+import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_LOCK_RETRY_INTERVAL;
+import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_LOCK_RETRY_TIMES;
+import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_LOCK_TTL;
 import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_TTL;
 import static com.hmall.common.constants.CacheConstants.CACHE_NULL_TTL;
 import static com.hmall.common.constants.CacheConstants.CACHE_NULL_VALUE;
@@ -46,25 +52,63 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
 
     private final ObjectMapper objectMapper;
 
+    /** 释放锁的Lua脚本：值仍等于自己的token才删除，防止误删其他线程新获取的锁 */
+    private static final DefaultRedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            Long.class);
+
     @Override
     public ItemDTO queryItemById(Long id) {
         // 1.查询缓存
         String key = getKey(id);
         String json = stringRedisTemplate.opsForValue().get(key);
-        // 2.缓存命中：空值占位直接返回null，正常数据反序列化返回
+        // 2.缓存命中（含空值占位）直接返回
         if (json != null) {
             return StrUtil.isBlank(json) ? null : deserialize(json);
         }
-        // 3.缓存未命中，查询数据库
-        Item item = getById(id);
-        // 4.写回缓存：商品不存在则写空值占位，防止缓存穿透
-        if (item == null) {
-            stringRedisTemplate.opsForValue().set(key, CACHE_NULL_VALUE, CACHE_NULL_TTL);
-            return null;
+        // 3.缓存未命中：尝试获取互斥锁，只允许一个线程重建缓存，解决缓存击穿
+        String lockKey = getLockKey(id);
+        String lockToken = UUID.randomUUID().toString();
+        boolean locked = Boolean.TRUE.equals(stringRedisTemplate.opsForValue()
+                .setIfAbsent(lockKey, lockToken, CACHE_ITEM_LOCK_TTL));
+        try {
+            if (locked) {
+                // 3.1 双重检查：排队拿到锁期间，缓存可能已被其他线程重建
+                json = stringRedisTemplate.opsForValue().get(key);
+                if (json != null) {
+                    return StrUtil.isBlank(json) ? null : deserialize(json);
+                }
+                // 3.2 查数据库并回填缓存
+                Item item = getById(id);
+                if (item == null) {
+                    // 商品不存在：写空值占位，防止缓存穿透
+                    stringRedisTemplate.opsForValue().set(key, CACHE_NULL_VALUE, CACHE_NULL_TTL);
+                    return null;
+                }
+                ItemDTO dto = BeanUtils.copyBean(item, ItemDTO.class);
+                stringRedisTemplate.opsForValue().set(key, serialize(dto), CACHE_ITEM_TTL);
+                return dto;
+            }
+            // 4.未抢到锁：说明其他线程正在重建缓存，休眠后重试读缓存
+            for (int i = 0; i < CACHE_ITEM_LOCK_RETRY_TIMES; i++) {
+                Thread.sleep(CACHE_ITEM_LOCK_RETRY_INTERVAL.toMillis());
+                json = stringRedisTemplate.opsForValue().get(key);
+                if (json != null) {
+                    return StrUtil.isBlank(json) ? null : deserialize(json);
+                }
+            }
+            // 5.重试超时兜底：直接查库返回，避免请求长时间阻塞
+            Item item = getById(id);
+            return item == null ? null : BeanUtils.copyBean(item, ItemDTO.class);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("等待缓存重建被中断", e);
+        } finally {
+            // 释放锁：值匹配才删除，防止误删其他线程新获取的锁
+            if (locked) {
+                unlock(lockKey, lockToken);
+            }
         }
-        ItemDTO dto = BeanUtils.copyBean(item, ItemDTO.class);
-        stringRedisTemplate.opsForValue().set(key, serialize(dto), CACHE_ITEM_TTL);
-        return dto;
     }
 
     @Override
@@ -142,6 +186,14 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
 
     private String getKey(Long id) {
         return CACHE_ITEM_KEY_PREFIX + id;
+    }
+
+    private String getLockKey(Long id) {
+        return CACHE_ITEM_LOCK_KEY_PREFIX + id;
+    }
+
+    private void unlock(String lockKey, String lockToken) {
+        stringRedisTemplate.execute(UNLOCK_SCRIPT, Collections.singletonList(lockKey), lockToken);
     }
 
     private void deleteCache(Serializable id) {
