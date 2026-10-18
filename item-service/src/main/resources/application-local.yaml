@@ -2,3 +2,6 @@ hm:
   db:
     host: 127.0.0.1 # 修改为你自己的虚拟机IP地址
     pw: 485872.zzz060403 # 修改为docker中的MySQL密码
+spring:
+  redis:
+    host: 127.0.0.1 # 本地运行服务时，直接连宿主机映射端口
