@@ -20,6 +20,12 @@ mybatis-plus:
     db-config:
       update-strategy: not_null
       id-type: auto
+  rabbitmq:
+    host: 127.0.0.1 # 你的虚拟机IP​
+    port: 5672 # 端口​
+    virtual-host: /mall # 虚拟主机​
+    username: mall # 用户名​
+    password: 123 # 密码
 logging:
   level:
     com.hmall: debug

@@ -15,8 +15,10 @@ import com.hmall.trade.service.IOrderDetailService;
 import com.hmall.trade.service.IOrderService;
 import io.seata.spring.annotation.GlobalTransactional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -40,6 +42,7 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
     private final ItemClient itemClient;
     private final IOrderDetailService detailService;
     private final CartClient cartClient;
+    private final RabbitTemplate rabbitTemplate;
 
     @Override
     @GlobalTransactional
@@ -53,6 +56,9 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
                 .collect(Collectors.toMap(OrderDetailDTO::getItemId, OrderDetailDTO::getNum));
         Set<Long> itemIds = itemNumMap.keySet();
         // 1.3.查询商品
+        /**
+         * 调用商品服务
+         */
         List<ItemDTO> items = itemClient.queryItemByIds(itemIds);
         if (items == null || items.size() < itemIds.size()) {
             throw new BadRequestException("商品不存在");
@@ -82,7 +88,8 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
         }
 
         // 4.清理购物车商品
-        cartClient.deleteCartItemByIds(itemIds);
+//        cartClient.deleteCartItemByIds(itemIds);
+        rabbitTemplate.convertAndSend("trade.topic","order.create",itemIds);
         return order.getId();
     }
 

@@ -56,6 +56,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         // 5.生成TOKEN
         String token = jwtTool.createToken(user.getId(), jwtProperties.getTokenTTL());
         // 6.封装VO返回
+
         UserLoginVO vo = new UserLoginVO();
         vo.setUserId(user.getId());
         vo.setUsername(user.getUsername());

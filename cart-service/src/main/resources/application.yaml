@@ -15,3 +15,9 @@ spring:
       transport:
         dashboard: localhost:8090
       http-method-specify: true # 开启请求方式前缀
+  rabbitmq:
+    host: 127.0.0.1 # 你的虚拟机IP
+    port: 5672 # 端口
+    virtual-host: /mall # 虚拟主机
+    username: mall # 用户名
+    password: 123 # 密码
