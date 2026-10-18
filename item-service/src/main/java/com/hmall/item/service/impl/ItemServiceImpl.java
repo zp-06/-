@@ -25,10 +25,15 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_KEY_PREFIX;
 import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_LOCK_KEY_PREFIX;
+import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_LOCK_RENEW_INTERVAL;
 import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_LOCK_RETRY_INTERVAL;
 import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_LOCK_RETRY_TIMES;
 import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_LOCK_TTL;
@@ -57,8 +62,28 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
             "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
             Long.class);
 
+    /** 续期锁的Lua脚本：值仍等于自己的token才续期，防止续到其他线程新获取的锁上 */
+    private static final DefaultRedisScript<Long> RENEW_SCRIPT = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end",
+            Long.class);
+
+    /** 看门狗线程池：单线程、守护线程，用于持锁期间定期续期 */
+    private static final ScheduledExecutorService WATCHDOG_EXECUTOR = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "cache-lock-watchdog");
+        thread.setDaemon(true);
+        return thread;
+    });
+
     @Override
     public ItemDTO queryItemById(Long id) {
+        return queryItemByIdWithMutex(id, CACHE_ITEM_LOCK_RETRY_TIMES);
+    }
+
+    /**
+     * 互斥锁版查询：未抢到锁的线程休眠后递归重试（重新查缓存 + 重新抢锁），
+     * 持锁线程启动看门狗定期续期，防止业务未执行完锁就过期
+     */
+    private ItemDTO queryItemByIdWithMutex(Long id, int retryCount) {
         // 1.查询缓存
         String key = getKey(id);
         String json = stringRedisTemplate.opsForValue().get(key);
@@ -71,43 +96,45 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
         String lockToken = UUID.randomUUID().toString();
         boolean locked = Boolean.TRUE.equals(stringRedisTemplate.opsForValue()
                 .setIfAbsent(lockKey, lockToken, CACHE_ITEM_LOCK_TTL));
-        try {
-            if (locked) {
-                // 3.1 双重检查：排队拿到锁期间，缓存可能已被其他线程重建
-                json = stringRedisTemplate.opsForValue().get(key);
-                if (json != null) {
-                    return StrUtil.isBlank(json) ? null : deserialize(json);
-                }
-                // 3.2 查数据库并回填缓存
+        // 4.未抢到锁：休眠后递归重试（重新查缓存、重新抢锁），实现接力重建
+        if (!locked) {
+            if (retryCount <= 0) {
+                // 重试耗尽兜底：直接查库返回，避免请求无限等待
                 Item item = getById(id);
-                if (item == null) {
-                    // 商品不存在：写空值占位，防止缓存穿透
-                    stringRedisTemplate.opsForValue().set(key, CACHE_NULL_VALUE, CACHE_NULL_TTL);
-                    return null;
-                }
-                ItemDTO dto = BeanUtils.copyBean(item, ItemDTO.class);
-                stringRedisTemplate.opsForValue().set(key, serialize(dto), CACHE_ITEM_TTL);
-                return dto;
+                return item == null ? null : BeanUtils.copyBean(item, ItemDTO.class);
             }
-            // 4.未抢到锁：说明其他线程正在重建缓存，休眠后重试读缓存
-            for (int i = 0; i < CACHE_ITEM_LOCK_RETRY_TIMES; i++) {
+            try {
                 Thread.sleep(CACHE_ITEM_LOCK_RETRY_INTERVAL.toMillis());
-                json = stringRedisTemplate.opsForValue().get(key);
-                if (json != null) {
-                    return StrUtil.isBlank(json) ? null : deserialize(json);
-                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("等待缓存锁被中断", e);
             }
-            // 5.重试超时兜底：直接查库返回，避免请求长时间阻塞
+            return queryItemByIdWithMutex(id, retryCount - 1);
+        }
+        // 5.抢到锁：启动看门狗定期续期，保证业务执行期间锁不会提前过期
+        ScheduledFuture<?> watchdog = startWatchdog(lockKey, lockToken);
+        try {
+            // 5.1 双重检查：排队抢到锁期间，缓存可能已被其他线程重建
+            json = stringRedisTemplate.opsForValue().get(key);
+            if (json != null) {
+                return StrUtil.isBlank(json) ? null : deserialize(json);
+            }
+            // 5.2 查数据库并回填缓存
             Item item = getById(id);
-            return item == null ? null : BeanUtils.copyBean(item, ItemDTO.class);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("等待缓存重建被中断", e);
-        } finally {
-            // 释放锁：值匹配才删除，防止误删其他线程新获取的锁
-            if (locked) {
-                unlock(lockKey, lockToken);
+            if (item == null) {
+                // 商品不存在：写空值占位，防止缓存穿透
+                stringRedisTemplate.opsForValue().set(key, CACHE_NULL_VALUE, CACHE_NULL_TTL);
+                return null;
             }
+            ItemDTO dto = BeanUtils.copyBean(item, ItemDTO.class);
+            stringRedisTemplate.opsForValue().set(key, serialize(dto), CACHE_ITEM_TTL);
+            return dto;
+        } finally {
+            // 6.先停止看门狗，再释放锁（Lua校验token，防止误删他人锁）
+            if (watchdog != null) {
+                watchdog.cancel(true);
+            }
+            unlock(lockKey, lockToken);
         }
     }
 
@@ -194,6 +221,31 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
 
     private void unlock(String lockKey, String lockToken) {
         stringRedisTemplate.execute(UNLOCK_SCRIPT, Collections.singletonList(lockKey), lockToken);
+    }
+
+    /**
+     * 启动看门狗：每 RENEW_INTERVAL 续期一次锁（TTL 重置为 10s），
+     * 业务执行期间锁不会提前过期；续期同样校验 token，不会续到别人的锁上
+     */
+    private ScheduledFuture<?> startWatchdog(String lockKey, String lockToken) {
+        long intervalSeconds = CACHE_ITEM_LOCK_RENEW_INTERVAL.toSeconds();
+        return WATCHDOG_EXECUTOR.scheduleWithFixedDelay(
+                () -> {
+                    try {
+                        renewLock(lockKey, lockToken);
+                    } catch (Exception e) {
+                        log.warn("缓存锁续期失败, lockKey={}", lockKey, e);
+                    }
+                },
+                intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
+    }
+
+    private void renewLock(String lockKey, String lockToken) {
+        stringRedisTemplate.execute(
+                RENEW_SCRIPT,
+                Collections.singletonList(lockKey),
+                lockToken,
+                String.valueOf(CACHE_ITEM_LOCK_TTL.toSeconds()));
     }
 
     private void deleteCache(Serializable id) {
