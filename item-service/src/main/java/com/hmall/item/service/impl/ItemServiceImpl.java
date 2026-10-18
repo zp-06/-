@@ -17,7 +17,6 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.Serializable;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -25,6 +24,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_KEY_PREFIX;
+import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_TTL;
+import static com.hmall.common.constants.CacheConstants.CACHE_NULL_TTL;
+import static com.hmall.common.constants.CacheConstants.CACHE_NULL_VALUE;
 
 /**
  * <p>
@@ -41,15 +45,6 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
     private final StringRedisTemplate stringRedisTemplate;
 
     private final ObjectMapper objectMapper;
-
-    /** 商品缓存key前缀 */
-    private static final String CACHE_ITEM_KEY_PREFIX = "cache:item:";
-    /** 商品缓存有效期：30分钟 */
-    private static final Duration CACHE_ITEM_TTL = Duration.ofMinutes(30);
-    /** 空值占位符，防止缓存穿透 */
-    private static final String CACHE_NULL_VALUE = "";
-    /** 空值占位有效期：5分钟 */
-    private static final Duration CACHE_NULL_TTL = Duration.ofMinutes(5);
 
     @Override
     public ItemDTO queryItemById(Long id) {
