@@ -26,6 +26,16 @@ mybatis-plus:
     virtual-host: /mall # 虚拟主机​
     username: mall # 用户名​
     password: 123 # 密码
+    publisher-confirm-type: correlated # 生产者确认：消息到达broker后回调确认（ConfirmCallback）
+    publisher-returns: true # 消息路由失败时回调（ReturnsCallback），需配合mandatory
+    listener:
+      simple:
+        acknowledge-mode: manual # 消费者手动确认（basicAck/basicNack）
+        retry:
+          enabled: true # 消费异常重试
+          initial-interval: 1000ms
+          multiplier: 2 # 重试间隔倍数
+          max-attempts: 3 # 重试3次仍失败，消息被拒收并进入死信队列
 logging:
   level:
     com.hmall: debug

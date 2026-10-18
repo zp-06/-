@@ -16,6 +16,7 @@ import com.hmall.pay.mapper.PayOrderMapper;
 import com.hmall.pay.service.IPayOrderService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -133,7 +134,9 @@ public class PayOrderServiceImpl extends ServiceImpl<PayOrderMapper, PayOrder> i
         // 5.修改订单状态
         // tradeClient.markOrderPaySuccess(po.getBizOrderNo());
         try {
-            rabbitTemplate.convertAndSend("pay.direct", "pay.success", po.getBizOrderNo());
+            // 发送支付成功消息到 pay.direct 交换机（trade-service 消费），携带CorrelationData关联生产者确认回调
+            rabbitTemplate.convertAndSend("pay.direct", "pay.success", po.getBizOrderNo(),
+                    new CorrelationData("pay-success-" + po.getBizOrderNo()));
         } catch (Exception e) {
             log.error("支付成功的消息发送失败，支付单id：{}， 交易单id：{}", po.getId(), po.getBizOrderNo(), e);
         }

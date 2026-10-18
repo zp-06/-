@@ -17,6 +17,7 @@ import com.hmall.trade.service.IOrderService;
 import io.seata.spring.annotation.GlobalTransactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
@@ -90,19 +91,22 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
 
         // 4.清理购物车商品
 //        cartClient.deleteCartItemByIds(itemIds);
-        rabbitTemplate.convertAndSend("trade.topic","order.create",itemIds);
+        // 发送清购物车消息，携带CorrelationData用于关联生产者确认回调
+        rabbitTemplate.convertAndSend("trade.topic", "order.create", itemIds,
+                new CorrelationData("create-order-cart-" + order.getId()));
         rabbitTemplate.convertAndSend(
                 MQConstants.DELAY_EXCHANGE_NAME,
                 MQConstants.DELAY_ORDER_KEY,
                 order.getId(),
                 message -> {
-                    message.getMessageProperties().setDelay(10000);
+                    message.getMessageProperties().setDelay(900000);
                     return message;
-                });
+                },
+                new CorrelationData("create-order-delay-" + order.getId()));
 
         return order.getId();
     }
-
+//todo 幂等性
     @Override
     public void markOrderPaySuccess(Long orderId) {
         // 1.查询订单
