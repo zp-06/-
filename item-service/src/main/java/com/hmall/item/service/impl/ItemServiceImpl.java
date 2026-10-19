@@ -6,14 +6,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hmall.common.exception.BizIllegalException;
 import com.hmall.common.utils.BeanUtils;
 
+import com.hmall.common.constants.ItemEsConstants;
+import com.hmall.common.constants.MQConstants;
 import com.hmall.item.domain.dto.ItemDTO;
+import com.hmall.item.domain.dto.ItemEsMessage;
 import com.hmall.item.domain.dto.OrderDetailDTO;
 import com.hmall.item.domain.po.Item;
 import com.hmall.item.mapper.ItemMapper;
 import com.hmall.item.service.IItemService;
-import com.hmall.item.service.ItemEsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
@@ -58,8 +62,8 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
 
     private final ObjectMapper objectMapper;
 
-    /** ES检索与同步服务：商品新增/修改/删除/库存变化后同步索引，保证搜索数据一致 */
-    private final ItemEsService itemEsService;
+    /** MQ消息发送：商品变更后发送消息，由消费者异步同步ES（解耦，ES故障不影响主流程） */
+    private final RabbitTemplate rabbitTemplate;
 
     /** 释放锁的Lua脚本：值仍等于自己的token才删除，防止误删其他线程新获取的锁 */
     private static final DefaultRedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(
@@ -195,8 +199,8 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
         }
         // 扣减库存成功后删除缓存，保证缓存与数据库最终一致
         items.forEach(detail -> deleteCache(detail.getItemId()));
-        // 库存变化同步ES，保证搜索结果中的库存准确（ES同步失败不影响主流程）
-        items.forEach(detail -> itemEsService.syncItem(detail.getItemId()));
+        // 库存变化发送MQ消息，消费者异步同步ES（失败不影响主流程）
+        items.forEach(detail -> sendEsSyncMessage(ItemEsConstants.ES_OP_STOCK, detail.getItemId()));
     }
 
     @Override
@@ -210,15 +214,15 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
         }
         // 库存恢复成功后删除缓存，保证下次读取到最新库存
         items.forEach(detail -> deleteCache(detail.getItemId()));
-        // 库存变化同步ES，保证搜索结果中的库存准确（ES同步失败不影响主流程）
-        items.forEach(detail -> itemEsService.syncItem(detail.getItemId()));
+        // 库存变化发送MQ消息，消费者异步同步ES（失败不影响主流程）
+        items.forEach(detail -> sendEsSyncMessage(ItemEsConstants.ES_OP_STOCK, detail.getItemId()));
     }
 
     @Override
     public boolean save(Item entity) {
         boolean saved = super.save(entity);
         if (saved) {
-            itemEsService.syncItem(entity.getId());
+            sendEsSyncMessage(ItemEsConstants.ES_OP_SAVE, entity.getId());
         }
         return saved;
     }
@@ -227,7 +231,7 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
     public boolean saveBatch(Collection<Item> entityList, int batchSize) {
         boolean saved = super.saveBatch(entityList, batchSize);
         if (saved) {
-            entityList.forEach(item -> itemEsService.syncItem(item.getId()));
+            entityList.forEach(item -> sendEsSyncMessage(ItemEsConstants.ES_OP_SAVE, item.getId()));
         }
         return saved;
     }
@@ -237,7 +241,7 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
         boolean updated = super.updateById(entity);
         if (updated) {
             deleteCache(entity.getId());
-            itemEsService.syncItem(entity.getId());
+            sendEsSyncMessage(ItemEsConstants.ES_OP_UPDATE, entity.getId());
         }
         return updated;
     }
@@ -247,9 +251,24 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
         boolean removed = super.removeById(id);
         if (removed) {
             deleteCache(id);
-            itemEsService.deleteItem((Long) id);
+            sendEsSyncMessage(ItemEsConstants.ES_OP_DELETE, (Long) id);
         }
         return removed;
+    }
+
+    /**
+     * 发送商品变更消息到MQ（生产者确认模式），由item-service内消费者按opType同步ES：
+     * save/update/stock -> 覆盖写文档；delete -> 删除文档。
+     * 发送失败只记日志，不影响商品主流程（业务与ES最终一致）
+     */
+    private void sendEsSyncMessage(String opType, Long id) {
+        try {
+            CorrelationData correlationData = new CorrelationData("item-es-" + opType + "-" + id);
+            rabbitTemplate.convertAndSend(MQConstants.ITEM_ES_EXCHANGE, MQConstants.ITEM_ES_KEY,
+                    new ItemEsMessage(opType, id), correlationData);
+        } catch (Exception e) {
+            log.error("商品变更消息发送失败, opType={}, id={}", opType, id, e);
+        }
     }
 
     private String getKey(Long id) {

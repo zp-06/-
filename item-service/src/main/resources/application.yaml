@@ -9,6 +9,22 @@ spring:
         max-active: 8 # 最大连接数
         max-idle: 8 # 最大空闲连接
         min-idle: 0 # 最小空闲连接
+  rabbitmq:
+    host: 127.0.0.1
+    port: 5672
+    virtual-host: /mall
+    username: mall
+    password: 123
+    publisher-confirm-type: correlated # 生产者确认
+    publisher-returns: true # 路由失败回调
+    listener:
+      simple:
+        acknowledge-mode: manual # 消费者手动确认
+        retry:
+          enabled: true
+          initial-interval: 1000ms
+          multiplier: 2
+          max-attempts: 3
 feign:
   okhttp:
     enabled: true # 开启OKHttp连接池支持

@@ -29,4 +29,12 @@ public class ItemEsConstants {
 
     /** ES中date字段格式 */
     public static final String ES_DATE_FORMAT = "yyyy-MM-dd HH:mm:ss";
+
+    /* ============ 商品变更消息操作类型（消费者按类型执行不同ES操作） ============ */
+    /** 新增/修改/库存变化：覆盖写入文档（IndexRequest id 相同则更新） */
+    public static final String ES_OP_SAVE = "save";
+    public static final String ES_OP_UPDATE = "update";
+    public static final String ES_OP_STOCK = "stock";
+    /** 删除：删除ES文档 */
+    public static final String ES_OP_DELETE = "delete";
 }
