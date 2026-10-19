@@ -46,13 +46,7 @@ import static com.hmall.common.constants.CacheConstants.CACHE_ITEM_TTL;
 import static com.hmall.common.constants.CacheConstants.CACHE_NULL_TTL;
 import static com.hmall.common.constants.CacheConstants.CACHE_NULL_VALUE;
 
-/**
- * <p>
- * 商品表 服务实现类
- * </p>
- *
- * @author 虎哥
- */
+/** 商品表 服务实现类 */
 @Slf4j
 @Service
 @RequiredArgsConstructor

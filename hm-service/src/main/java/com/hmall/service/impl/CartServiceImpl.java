@@ -25,14 +25,7 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/**
- * <p>
- * 订单详情表 服务实现类
- * </p>
- *
- * @author 虎哥
- * @since 2023-05-05
- */
+/** 订单详情表 服务实现类 */
 @Service
 @RequiredArgsConstructor
 public class CartServiceImpl extends ServiceImpl<CartMapper, Cart> implements ICartService {

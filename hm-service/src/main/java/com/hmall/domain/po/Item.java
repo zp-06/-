@@ -11,14 +11,7 @@ import lombok.experimental.Accessors;
 import java.io.Serializable;
 import java.time.LocalDateTime;
 
-/**
- * <p>
- * 商品表
- * </p>
- *
- * @author 虎哥
- * @since 2023-05-05
- */
+/** 商品表 */
 @Data
 @EqualsAndHashCode(callSuper = false)
 @Accessors(chain = true)

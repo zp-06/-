@@ -13,13 +13,7 @@ import org.springframework.stereotype.Service;
 import java.util.Collection;
 import java.util.List;
 
-/**
- * <p>
- * 商品表 服务实现类
- * </p>
- *
- * @author 虎哥
- */
+/** 商品表 服务实现类 */
 @Service
 public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements IItemService {
 
