@@ -1,7 +1,7 @@
 package com.hmall.common.constants;
 
 public interface MQConstants {
-
+    /** 延迟消息1 **/
     String DELAY_EXCHANGE_NAME = "trade.delay.direct";
 
     String DELAY_ORDER_QUEUE_NAME = "trade.delay.order.queue";
