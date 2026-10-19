@@ -11,6 +11,7 @@ import com.hmall.item.domain.dto.OrderDetailDTO;
 import com.hmall.item.domain.po.Item;
 import com.hmall.item.mapper.ItemMapper;
 import com.hmall.item.service.IItemService;
+import com.hmall.item.service.ItemEsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -56,6 +57,9 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
     private final StringRedisTemplate stringRedisTemplate;
 
     private final ObjectMapper objectMapper;
+
+    /** ES检索与同步服务：商品新增/修改/删除/库存变化后同步索引，保证搜索数据一致 */
+    private final ItemEsService itemEsService;
 
     /** 释放锁的Lua脚本：值仍等于自己的token才删除，防止误删其他线程新获取的锁 */
     private static final DefaultRedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(
@@ -191,6 +195,8 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
         }
         // 扣减库存成功后删除缓存，保证缓存与数据库最终一致
         items.forEach(detail -> deleteCache(detail.getItemId()));
+        // 库存变化同步ES，保证搜索结果中的库存准确（ES同步失败不影响主流程）
+        items.forEach(detail -> itemEsService.syncItem(detail.getItemId()));
     }
 
     @Override
@@ -204,6 +210,26 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
         }
         // 库存恢复成功后删除缓存，保证下次读取到最新库存
         items.forEach(detail -> deleteCache(detail.getItemId()));
+        // 库存变化同步ES，保证搜索结果中的库存准确（ES同步失败不影响主流程）
+        items.forEach(detail -> itemEsService.syncItem(detail.getItemId()));
+    }
+
+    @Override
+    public boolean save(Item entity) {
+        boolean saved = super.save(entity);
+        if (saved) {
+            itemEsService.syncItem(entity.getId());
+        }
+        return saved;
+    }
+
+    @Override
+    public boolean saveBatch(Collection<Item> entityList, int batchSize) {
+        boolean saved = super.saveBatch(entityList, batchSize);
+        if (saved) {
+            entityList.forEach(item -> itemEsService.syncItem(item.getId()));
+        }
+        return saved;
     }
 
     @Override
@@ -211,6 +237,7 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
         boolean updated = super.updateById(entity);
         if (updated) {
             deleteCache(entity.getId());
+            itemEsService.syncItem(entity.getId());
         }
         return updated;
     }
@@ -218,7 +245,10 @@ public class ItemServiceImpl extends ServiceImpl<ItemMapper, Item> implements II
     @Override
     public boolean removeById(Serializable id) {
         boolean removed = super.removeById(id);
-        deleteCache(id);
+        if (removed) {
+            deleteCache(id);
+            itemEsService.deleteItem((Long) id);
+        }
         return removed;
     }
 

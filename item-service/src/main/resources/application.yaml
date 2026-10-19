@@ -20,3 +20,5 @@ hm:
     package: com.hmall.item.controller
   db:
     database: hm-item
+  es:
+    host: 127.0.0.1:9200 # Elasticsearch地址（本地直连容器映射端口）
