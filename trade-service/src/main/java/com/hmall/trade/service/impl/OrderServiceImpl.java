@@ -20,6 +20,8 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.LocalDateTime;
@@ -85,17 +87,26 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
         // 4.清理购物车商品
 //        cartClient.deleteCartItemByIds(itemIds);
         // 发送清购物车消息，携带CorrelationData用于关联生产者确认回调
-        rabbitTemplate.convertAndSend("trade.topic", "order.create", itemIds,
-                new CorrelationData("create-order-cart-" + order.getId()));
-        rabbitTemplate.convertAndSend(
-                MQConstants.DELAY_EXCHANGE_NAME,
-                MQConstants.DELAY_ORDER_KEY,
-                order.getId(),
-                message -> {
-                    message.getMessageProperties().setDelay(900000);
-                    return message;
-                },
-                new CorrelationData("create-order-delay-" + order.getId()));
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                // 只要代码执行到这里，说明数据库已经百分百 COMMIT 成功了
+                // 此时再发 MQ，就不会出现“数据回滚了，消息却发了”的问题
+                rabbitTemplate.convertAndSend("trade.topic", "order.create", itemIds,
+                        new CorrelationData("create-order-cart-" + order.getId()));
+                rabbitTemplate.convertAndSend(
+                        MQConstants.DELAY_EXCHANGE_NAME,
+                        MQConstants.DELAY_ORDER_KEY,
+                        order.getId(),
+                        message -> {
+                            message.getMessageProperties().setDelay(900000);
+                            return message;
+                        },
+                        new CorrelationData("create-order-delay-" + order.getId()));            }
+        });
+
+        // 如果这里发生异常，事务回滚，afterCommit 根本不会执行，消息也就不会发出去。
+
 
         return order.getId();
     }
@@ -120,7 +131,7 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Order> implements
     //TODO 4.2.未支付，取消订单，回复库存
     @Override
     @GlobalTransactional
-    public void cancelOrder(Long orderId) {
+    public void  cancelOrder(Long orderId) {
         // 1.查询订单
         Order old = getById(orderId);
         // 2.判断订单状态：只有未付款（状态1）才能取消，其它状态直接放弃
