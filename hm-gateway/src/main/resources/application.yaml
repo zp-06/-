@@ -1,15 +1,1 @@
-server:
-  port: 8080
-
-hm:
-  jwt:
-    location: classpath:hmall.jks
-    alias: hmall
-    password: hmall123
-    tokenTTL: 30m
-  auth:
-    excludePaths:
-      - /search/**
-      - /users/login
-      - /items/**
-      - /hi
+# 配置已全部抽取至 Nacos 配置中心（dataId: gateway.yaml + shared-log.yaml + gateway-routes.json，见 bootstrap.yaml）
