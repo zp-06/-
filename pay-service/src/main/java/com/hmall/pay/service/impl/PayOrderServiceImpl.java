@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.toolkit.StringUtils;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmall.api.client.TradeClient;
 import com.hmall.api.client.UserClient;
+import com.hmall.common.constants.MQConstants;
 import com.hmall.common.exception.BizIllegalException;
 import com.hmall.common.utils.BeanUtils;
 import com.hmall.common.utils.UserContext;
@@ -14,12 +15,15 @@ import com.hmall.pay.domain.po.PayOrder;
 import com.hmall.pay.enums.PayStatus;
 import com.hmall.pay.mapper.PayOrderMapper;
 import com.hmall.pay.service.IPayOrderService;
+import io.seata.spring.annotation.GlobalTransactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 
@@ -108,7 +112,7 @@ public class PayOrderServiceImpl extends ServiceImpl<PayOrderMapper, PayOrder> i
     }
 
     @Override
-    @Transactional
+    @GlobalTransactional
     public void tryPayOrderByBalance(PayOrderFormDTO payOrderDTO) {
         // 1.查询支付单
         PayOrder po = getById(payOrderDTO.getId());
@@ -126,13 +130,20 @@ public class PayOrderServiceImpl extends ServiceImpl<PayOrderMapper, PayOrder> i
         }
         // 5.修改订单状态
         // tradeClient.markOrderPaySuccess(po.getBizOrderNo());
-        try {
-            // 发送支付成功消息到 pay.direct 交换机（trade-service 消费），携带CorrelationData关联生产者确认回调
-            rabbitTemplate.convertAndSend("pay.direct", "pay.success", po.getBizOrderNo(),
-                    new CorrelationData("pay-success-" + po.getBizOrderNo()));
-        } catch (Exception e) {
-            log.error("支付成功的消息发送失败，支付单id：{}， 交易单id：{}", po.getId(), po.getBizOrderNo(), e);
-        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    // 发送支付成功消息到 pay.direct 交换机（trade-service 消费），携带CorrelationData关联生产者确认回调
+                    rabbitTemplate.convertAndSend("pay.direct", "pay.success", po.getBizOrderNo(),
+                            new CorrelationData("pay-success-" + po.getBizOrderNo()));
+                } catch (Exception e) {
+                    log.error("支付成功的消息发送失败，支付单id：{}， 交易单id：{}", po.getId(), po.getBizOrderNo(), e);
+                }           }
+        });
+
+        // 如果这里发生异常，事务回滚，afterCommit 根本不会执行，消息也就不会发出去。
+
     }
 
 
